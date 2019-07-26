@@ -1,9 +1,16 @@
+import time
+import json
+import os
+import gym
 import numpy as np
 import tensorflow as tf
-import gym
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress all messages
+tf.logging.set_verbosity(tf.logging.ERROR)
 from datetime import datetime
-import time
-from neuro.a2c import ActorCritic
+from versterken.a2c import ActorCritic
+from versterken.utils import create_directories
+from versterken.atari import rgb_to_grayscale, collect_frames
+
 
 def mlp(x, sizes, activation, output_activation=None):
     for size in sizes[:-1]:
@@ -49,15 +56,6 @@ def cnn(x, action_dim, scope=''):
 
         # logits
         return tf.layers.dense(x, action_dim)
-
-def bootstrapped_values(terminal_value, rewards, gamma):
-    """Calculate targets used to update policy and value functions."""
-    targets = []
-    R = terminal_value
-    for r in rewards[-1::-1]:
-        R = r + gamma * R
-        targets += [R]
-    return targets[-1::-1]  # reverse to match original ordering
 
 def run_episode(env, agent, sess, writer, global_step, render=False):
     episode_return = 0
@@ -159,12 +157,28 @@ def log_scalar(writer, tag, value, step):
 def print_items(items):
     print(', '.join([f"{k}: {v}" for (k,v) in items.items()]))
 
-def create_agent(state_dim, action_dim, sizes, atari=False, **kwargs):
+def train(env_name='CartPole-v0',
+          device='/cpu:0',
+          hidden_units=[64],
+          learning_rate=1e-3,
+          beta=0.0,
+          discount_factor=0.99,
+          update_freq=5,
+          max_episodes=1000,
+          pass_condition=195.0,
+          log_freq=25,
+          ckpt_freq=25,
+          base_dir=None,
+          render=True,
+          atari=False):
+    """
+        Train an a2c agent on `env_name`.
+    """
 
-    # action_dim = env.action_space.n
-    # state_dim = env.observation_space.shape[0]
-
-    # create placeholders and networks
+    print("Creating graph...")
+    env = gym.make(env_name)
+    action_dim = env.action_space.n
+    state_dim = env.observation_space.shape[0]
     with tf.device(device):
         if atari:
             states_pl = tf.placeholder(tf.float32, [None, 84, 84, agent_history])
@@ -184,10 +198,10 @@ def create_agent(state_dim, action_dim, sizes, atari=False, **kwargs):
                 scope='value'
             )
         else:
-            values = mlp(states_pl, sizes + [1], tf.tanh)
-            policy_logits = mlp(states_pl, sizes + [action_dim], tf.tanh)
+            values = mlp(states_pl, hidden_units + [1], tf.tanh)
+            policy_logits = mlp(states_pl, hidden_units + [action_dim], tf.tanh)
 
-    # create agent
+    print("Creating agent...")
     placeholders = {
         'states': states_pl,
         'actions': actions_pl,
@@ -197,18 +211,33 @@ def create_agent(state_dim, action_dim, sizes, atari=False, **kwargs):
         'value': values,
         'policy': policy_logits
     }
-    return ActorCritic(placeholders, networks, **kwargs)
+    agent = ActorCritic(
+        placeholders,
+        networks,
+        lr=learning_rate,
+        beta=beta,
+        update_freq=update_freq,
+        gamma=discount_factor,
+        device=device,
+    )
 
-def train(agent, env_name, max_episodes, pass_condition, log_dir='.'):
-    """
-        Train `agent` on environment `env`.
-    """
+    print("Setting up directories...")
+    if base_dir is not None:
+        ckpt_dir, log_dir, meta_dir = create_directories(env_name, "a2c", base_dir)
+        meta = {
+            'env_name': env_name,
+        }
+        with open(meta_dir + '/meta.json', 'w') as file:
+            json.dump(meta, file, indent=2)
+    else:
+        ckpt_dir = log_dir = None
+
+    print("Starting training...")
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         now = datetime.today()
         date_string = now.strftime("%Y-%m-%d-%H:%M:%S.%f")
         writer = tf.summary.FileWriter(log_dir + '/' + date_string, sess.graph)
-        env = gym.make(env_name)
         returns = []
         global_step = 0
         for episode in range(max_episodes):
@@ -232,39 +261,43 @@ def train(agent, env_name, max_episodes, pass_condition, log_dir='.'):
                     episode_fps,
                     global_step
                 )
-                if avg_return > pass_condition:
-                    print("passed!")
-                    break
+            if (episode + 1) % ckpt_freq == 0:
+                if ckpt_dir is not None:
+                    agent.save(ckpt_dir + "/ckpt", global_step, sess)
+            if avg_return > pass_condition:
+                agent.save(ckpt_dir + "/ckpt", global_step, sess)
+                print("passed!")
+                break
 
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('env_name', 'CartPole-v0', """Gym environment.""")
 tf.app.flags.DEFINE_string('device', '/cpu:0', """'/cpu:0' or '/gpu:0'.""")
-tf.app.flags.DEFINE_integer('state_dim', 4, """Dimension/size of the state space.""")
-tf.app.flags.DEFINE_integer('action_dim', 2, """Dimension/size of the action space.""")
 tf.app.flags.DEFINE_string('hidden_units', '64', """Size of hidden layers.""")
 tf.app.flags.DEFINE_float('learning_rate', 0.00025, """Initial learning rate.""")
 tf.app.flags.DEFINE_float('beta', 1., """Entropy penalty strength.""")
 tf.app.flags.DEFINE_float('discount_factor', 0.99, """Discount factor in update.""")
 tf.app.flags.DEFINE_integer('update_freq', 5, """Number of actions between updates.""")
 tf.app.flags.DEFINE_integer('max_episodes', 10000, """Episodes per train/test run.""")
+tf.app.flags.DEFINE_float('pass_condition', 195., """Average score considered passing environment.""")
 tf.app.flags.DEFINE_integer('ckpt_freq', 25, """Episodes per checkpoint.""")
 tf.app.flags.DEFINE_integer('log_freq', 25, """Steps per log.""")
 tf.app.flags.DEFINE_string('base_dir', '.', """Base directory for checkpoints and logs.""")
-tf.app.flags.DEFINE_float('pass_condition', 195., """Average score considered passing environment.""")
-tf.app.flags.DEFINE_boolean('render', False, """Render episodes (once per `ckpt_freq` in training mode).""")
+tf.app.flags.DEFINE_boolean('render', True, """Render episodes (once per `ckpt_freq` in training mode).""")
 tf.app.flags.DEFINE_boolean('atari', False, """Is it an Atari environment?""")
 
 if __name__ == "__main__":
-    agent = create_agent(state_dim=FLAGS.state_dim,
-                         action_dim=FLAGS.action_dim,
-                         sizes=[int(i) for i in FLAGS.hidden_units.split(',')],
-                         atari=FLAGS.atari,
-                         lr=FLAGS.learning_rate,
-                         beta=FLAGS.beta,
-                         gamma=FLAGS.discount_factor,
-                         update_freq=FLAGS.update_freq)
-    result = train(agent=agent,
-                   env_name=FLAGS.env_name,
-                   max_episodes=FLAGS.max_episodes,
-                   pass_condition=FLAGS.pass_condition)
+    train(env_name=FLAGS.env_name,
+          device=FLAGS.device,
+          hidden_units=[int(i) for i in FLAGS.hidden_units.split(',')],
+          learning_rate=FLAGS.learning_rate,
+          beta=FLAGS.beta,
+          discount_factor=FLAGS.discount_factor,
+          update_freq=FLAGS.update_freq,
+          max_episodes=FLAGS.max_episodes,
+          pass_condition=FLAGS.pass_condition,
+          log_freq=FLAGS.log_freq,
+          ckpt_freq=FLAGS.log_freq,
+          base_dir=FLAGS.base_dir,
+          render=FLAGS.render,
+          atari=FLAGS.atari)
