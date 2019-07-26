@@ -12,5 +12,5 @@ setup(name='versterken',
       description='Deep Reinforcement Learning with TensorFlow',
       long_description=readme,
       license=license,
-      packages=['main']
+      packages=['versterken']
 )

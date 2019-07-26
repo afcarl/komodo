@@ -10,6 +10,7 @@ class ActorCritic():
             beta=0.,
             update_freq=5,
             gamma=1.,
+            device='/cpu:0'
         ):
 
         # construct graph
@@ -50,6 +51,9 @@ class ActorCritic():
             tf.summary.histogram('entropy_loss', entropy_loss)
             summary_op = tf.summary.merge_all()
 
+            # checkpoints
+            saver = tf.train.Saver()
+
         # define handles
         self.states_pl = states_pl
         self.actions_pl = actions_pl
@@ -59,6 +63,7 @@ class ActorCritic():
         self.value_update = value_update
         self.action_sample = action_sample
         self.summary_op = summary_op
+        self.saver = saver
         self.update_freq = update_freq
         self.gamma = gamma
 
@@ -91,3 +96,15 @@ class ActorCritic():
             }
         )
         return summary
+
+    def save(self, path, step, sess):
+        self.saver.save(sess, save_path=path, global_step=step)
+
+def bootstrapped_values(terminal_value, rewards, gamma):
+    """Calculate targets used to update policy and value functions."""
+    targets = []
+    R = terminal_value
+    for r in rewards[-1::-1]:
+        R = r + gamma * R
+        targets += [R]
+    return targets[-1::-1]  # reverse to match original ordering
