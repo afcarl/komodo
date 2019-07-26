@@ -6,11 +6,11 @@ with open('README.md') as f:
 with open('LICENSE') as f:
     license = f.read()
 
-setup(name='neuro',
-      url='https://github.com/katabaticwind/neuro',
+setup(name='versterken',
+      url='https://github.com/katabaticwind/versterken',
       version='0.1',
       description='Deep Reinforcement Learning with TensorFlow',
       long_description=readme,
       license=license,
-      packages=['neuro']
+      packages=['main']
 )
