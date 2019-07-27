@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 
 def collect_frames(queue, nframes):
-    queue.fill(nframes)
+    queue.fill()
     return np.stack(queue.queue, axis=-1)
 
 def rgb_to_grayscale(frame):

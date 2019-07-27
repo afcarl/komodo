@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+import tensorflow as tf
 
 def create_directories(env_name, agent_name, base_dir = "."):
     """Create a directories to save logs and checkpoints.
@@ -21,10 +22,18 @@ def create_directories(env_name, agent_name, base_dir = "."):
     os.makedirs(meta_dir)
     return ckpt_dir, log_dir, meta_dir
 
-def log_scalar(logger, tag, value, step):
+def log_scalar(writer, tag, value, step):
     value = [tf.Summary.Value(tag=tag, simple_value=value)]
     summary = tf.Summary(value=value)
-    logger.add_summary(summary, step)
+    writer.add_summary(summary, step)
+
+def log_episode(writer, episode_return, episode_steps, episode_fps, global_step):
+    log_scalar(writer, 'return', episode_return, global_step)
+    log_scalar(writer, 'steps', episode_steps, global_step)
+    log_scalar(writer, 'fps', episode_fps, global_step)
+
+def print_items(items):
+    print(', '.join([f"{k}: {v}" for (k,v) in items.items()]))
 
 def find_latest_checkpoint(load_path, prefix):
     """Find the latest checkpoint in dir at `load_path` with prefix `prefix`

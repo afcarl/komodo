@@ -1,4 +1,5 @@
 import tensorflow as tf
+from versterken.atari import rgb_to_grayscale
 
 class ActorCritic():
 
@@ -10,7 +11,9 @@ class ActorCritic():
             beta=0.,
             update_freq=5,
             gamma=1.,
-            device='/cpu:0'
+            history=1,
+            device='/cpu:0',
+            atari=False
         ):
 
         # construct graph
@@ -43,16 +46,16 @@ class ActorCritic():
             # action selection
             action_sample = tf.squeeze(tf.multinomial(logits=policy_logits, num_samples=1), axis=1)
 
-            # tensorboard
-            tf.summary.histogram('values', values)
-            tf.summary.histogram('policy_logits', policy_logits)
-            tf.summary.histogram('value_loss', value_loss)
-            tf.summary.histogram('policy_loss', policy_loss)
-            tf.summary.histogram('entropy_loss', entropy_loss)
-            summary_op = tf.summary.merge_all()
+        # tensorboard
+        tf.summary.histogram('values', values)
+        tf.summary.histogram('policy_logits', policy_logits)
+        tf.summary.histogram('value_loss', value_loss)
+        tf.summary.histogram('policy_loss', policy_loss)
+        tf.summary.histogram('entropy_loss', entropy_loss)
+        summary_op = tf.summary.merge_all()
 
-            # checkpoints
-            saver = tf.train.Saver()
+        # checkpoints
+        saver = tf.train.Saver()
 
         # define handles
         self.states_pl = states_pl
@@ -66,6 +69,11 @@ class ActorCritic():
         self.saver = saver
         self.update_freq = update_freq
         self.gamma = gamma
+        self.history = history
+
+        # preprocessor
+        self.frame_pl = tf.placeholder(tf.uint8, [210, 160, 3])
+        self.preprocess_op = rgb_to_grayscale(self.frame_pl)  # uint8, 84 x 84
 
     def action(self, state, sess):
         return sess.run(self.action_sample, feed_dict={self.states_pl: state})[0]
@@ -81,6 +89,9 @@ class ActorCritic():
                 }
             )
         return bootstrapped_values(terminal_value, rewards, self.gamma)
+
+    def preprocess(self, frame, sess):
+        return sess.run(self.preprocess_op, {self.frame_pl: frame})
 
     def update(self, states, actions, targets, sess):
         summary, _, _ = sess.run(
@@ -108,3 +119,30 @@ def bootstrapped_values(terminal_value, rewards, gamma):
         R = r + gamma * R
         targets += [R]
     return targets[-1::-1]  # reverse to match original ordering
+
+
+class Generator():
+
+    def __init__(self, id, agent):
+        self.env = gym.make(id)
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.state = self.env.reset()
+
+    def sample(self, n):
+        self.states.clear()
+        self.actions.clear()
+        self.rewards.clear()
+        for i in range(n):
+            state = self.state
+            action = self.agent.action(self.state)  # TODO: reshape state
+            next_state, reward, done, info = self.env.step(action)
+            self.states += [state]
+            self.actions += [action]
+            self.rewards += [reward]
+            self.state = next_state
+            if done:
+                self.state = self.env.reset()
+                break
+        return self.states, self.actions, self.rewards, next_state, done

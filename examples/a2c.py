@@ -8,54 +8,14 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress all messages
 tf.logging.set_verbosity(tf.logging.ERROR)
 from datetime import datetime
 from versterken.a2c import ActorCritic
-from versterken.utils import create_directories
-from versterken.atari import rgb_to_grayscale, collect_frames
+from versterken.atari import collect_frames
+from versterken.queue import Queue
+from versterken.utils import create_directories, log_scalar, log_episode, print_items
+from versterken.keras import mlp, cnn
 
-
-def mlp(x, sizes, activation, output_activation=None):
-    for size in sizes[:-1]:
-        x = tf.layers.dense(x, units=size, activation=activation)
-    if sizes[-1] == 1:
-        return tf.squeeze(tf.layers.dense(x, units=sizes[-1], activation=output_activation))
-    else:
-        return tf.layers.dense(x, units=sizes[-1], activation=output_activation)
-
-def cnn(x, action_dim, scope=''):
-
-    with tf.variable_scope(scope):
-
-        # conv1
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=32,
-            kernel_size=8,
-            strides=4,
-            padding='valid',
-            activation=tf.nn.relu)
-
-        # conv2
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=64,
-            kernel_size=4,
-            strides=2,
-            padding='valid',
-            activation=tf.nn.relu)
-
-        # conv3
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=64,
-            kernel_size=3,
-            strides=1,
-            padding='valid',
-            activation=tf.nn.relu)
-
-        # dense
-        x = tf.layers.dense(tf.reshape(x, (-1, 64 * 7 * 7)), 512, tf.nn.relu)
-
-        # logits
-        return tf.layers.dense(x, action_dim)
+# TODO: gradient clipping?
+# TODO: multiple environments?
+# TODO: learning_rate annealing
 
 def run_episode(env, agent, sess, writer, global_step, render=False):
     episode_return = 0
@@ -99,32 +59,31 @@ def run_episode(env, agent, sess, writer, global_step, render=False):
     return episode_return, episode_steps, episode_fps, global_step
 
 def run_atari(env, agent, sess, writer, global_step, render=False):
-    obs = env.reset()
-    obs_queue = Queue(init_values=[preprocess(obs, sess)], size=agent_history)
-    state = collect_frames(obs_queue, nframes=agent_history)
     episode_return = 0
     episode_steps = 0
-    start_time = time.time()
     start_step = global_step
     states = []
     actions = []
     rewards = []
+    obs = env.reset()
+    obs_queue = Queue(init_values=[agent.preprocess(obs, sess)], size=agent.history)
+    state = collect_frames(obs_queue, nframes=agent.history)
     if render == True:
         env.render()
+    start_time = time.time()
     while True:
         # perform an action
-        action = agent.action(state.reshape(1, -1), sess)
+        action = agent.action(state.reshape(1, 84, 84, agent.history), sess)
         obs, reward, done, info = env.step(action)
         if render == True:
             env.render()
-            time.sleep(delay)
         # record transition
         states += [state]
         actions += [action]
         rewards += [reward]
         # calculate new state
-        obs_queue.push(preprocess(obs, sess))
-        state = collect_frames(obs_queue, nframes=agent_history)
+        obs_queue.push(agent.preprocess(obs, sess))
+        state = collect_frames(obs_queue, nframes=agent.history)
         # update episode totals
         episode_return += reward
         episode_steps += 1
@@ -132,7 +91,7 @@ def run_atari(env, agent, sess, writer, global_step, render=False):
         global_step += 1
         if episode_steps % agent.update_freq == 0 or done:
             # update networks
-            targets = agent.targets(state, rewards, done, sess)
+            targets = agent.targets(state.reshape(1, 84, 84, agent.history), rewards, done, sess)
             summary = agent.update(states, actions, targets, sess)
             writer.add_summary(summary, global_step)
             # reset arrays
@@ -144,29 +103,17 @@ def run_atari(env, agent, sess, writer, global_step, render=False):
     episode_fps = (global_step - start_step) / (time.time() - start_time)
     return episode_return, episode_steps, episode_fps, global_step
 
-def log_episode(writer, episode_return, episode_steps, episode_fps, global_step):
-    log_scalar(writer, 'return', episode_return, global_step)
-    log_scalar(writer, 'steps', episode_steps, global_step)
-    log_scalar(writer, 'fps', episode_fps, global_step)
-
-def log_scalar(writer, tag, value, step):
-    value = [tf.Summary.Value(tag=tag, simple_value=value)]
-    summary = tf.Summary(value=value)
-    writer.add_summary(summary, step)
-
-def print_items(items):
-    print(', '.join([f"{k}: {v}" for (k,v) in items.items()]))
-
 def train(env_name='CartPole-v0',
           device='/cpu:0',
           hidden_units=[64],
           learning_rate=1e-3,
           beta=0.0,
-          discount_factor=0.99,
-          update_freq=5,
+          discount_factor=1.0,
+          update_freq=4,
+          agent_history=1,
           max_episodes=1000,
           pass_condition=195.0,
-          log_freq=25,
+          log_freq=5,
           ckpt_freq=25,
           base_dir=None,
           render=True,
@@ -195,7 +142,7 @@ def train(env_name='CartPole-v0',
             policy_logits = cnn(
                 tf.cast(states_pl, tf.float32) / 255.0,
                 action_dim,
-                scope='value'
+                scope='policy'
             )
         else:
             values = mlp(states_pl, hidden_units + [1], tf.tanh)
@@ -218,7 +165,9 @@ def train(env_name='CartPole-v0',
         beta=beta,
         update_freq=update_freq,
         gamma=discount_factor,
+        history=agent_history,
         device=device,
+        atari=atari,
     )
 
     print("Setting up directories...")
@@ -241,17 +190,27 @@ def train(env_name='CartPole-v0',
         returns = []
         global_step = 0
         for episode in range(max_episodes):
-            data = run_episode(env, agent, sess, writer, global_step)
+            if (episode + 1) % ckpt_freq == 0:  # render (if render == True)
+                if atari:
+                    data = run_atari(env, agent, sess, writer, global_step, render)
+                else:
+                    data = run_episode(env, agent, sess, writer, global_step, render)
+            else:  # no rendering
+                if atari:
+                    data = run_atari(env, agent, sess, writer, global_step)
+                else:
+                    data = run_episode(env, agent, sess, writer, global_step)
             episode_return, episode_steps, episode_fps, global_step = data
             returns += [episode_return]
-            avg_return = sum(returns[-100:]) / 100
+            avg_return = sum(returns[-100:]) / min(len(returns), 100)
             if episode % log_freq == 0 or avg_return > pass_condition:
                 print_items(
                     {
                         'episode': episode,
                         'return': episode_return,
                         'average': avg_return,
-                        'step': global_step
+                        'step': global_step,
+                        'fps': episode_fps
                     }
                 )
                 log_episode(
@@ -271,33 +230,35 @@ def train(env_name='CartPole-v0',
 
 
 FLAGS = tf.app.flags.FLAGS
-tf.app.flags.DEFINE_string('env_name', 'CartPole-v0', """Gym environment.""")
-tf.app.flags.DEFINE_string('device', '/cpu:0', """'/cpu:0' or '/gpu:0'.""")
+tf.app.flags.DEFINE_string('env_name', 'Pong-v4', """Gym environment.""")
+tf.app.flags.DEFINE_string('device', '/gpu:0', """'/cpu:0' or '/gpu:0'.""")
 tf.app.flags.DEFINE_string('hidden_units', '64', """Size of hidden layers.""")
-tf.app.flags.DEFINE_float('learning_rate', 0.00025, """Initial learning rate.""")
-tf.app.flags.DEFINE_float('beta', 1., """Entropy penalty strength.""")
+tf.app.flags.DEFINE_float('learning_rate', 0.001, """Initial learning rate.""")
+tf.app.flags.DEFINE_float('beta', 0.01, """Entropy penalty strength.""")
 tf.app.flags.DEFINE_float('discount_factor', 0.99, """Discount factor in update.""")
-tf.app.flags.DEFINE_integer('update_freq', 5, """Number of actions between updates.""")
+tf.app.flags.DEFINE_integer('update_freq', 8, """Number of actions between updates.""")
+tf.app.flags.DEFINE_integer('agent_history', 4, """Number of actions between updates.""")
 tf.app.flags.DEFINE_integer('max_episodes', 10000, """Episodes per train/test run.""")
-tf.app.flags.DEFINE_float('pass_condition', 195., """Average score considered passing environment.""")
-tf.app.flags.DEFINE_integer('ckpt_freq', 25, """Episodes per checkpoint.""")
-tf.app.flags.DEFINE_integer('log_freq', 25, """Steps per log.""")
+tf.app.flags.DEFINE_float('pass_condition', 19.5, """Average score considered passing environment.""")
+tf.app.flags.DEFINE_integer('ckpt_freq', 10, """Episodes per checkpoint.""")
+tf.app.flags.DEFINE_integer('log_freq', 1, """Steps per log.""")
 tf.app.flags.DEFINE_string('base_dir', '.', """Base directory for checkpoints and logs.""")
 tf.app.flags.DEFINE_boolean('render', True, """Render episodes (once per `ckpt_freq` in training mode).""")
-tf.app.flags.DEFINE_boolean('atari', False, """Is it an Atari environment?""")
+tf.app.flags.DEFINE_boolean('atari', True, """Is it an Atari environment?""")
 
 if __name__ == "__main__":
     train(env_name=FLAGS.env_name,
           device=FLAGS.device,
-          hidden_units=[int(i) for i in FLAGS.hidden_units.split(',')],
+          hidden_units=[int(i) for i in FLAGS.hidden_units.split(',')],  # ignored if atari == False
           learning_rate=FLAGS.learning_rate,
           beta=FLAGS.beta,
           discount_factor=FLAGS.discount_factor,
           update_freq=FLAGS.update_freq,
+          agent_history=FLAGS.agent_history,
           max_episodes=FLAGS.max_episodes,
           pass_condition=FLAGS.pass_condition,
           log_freq=FLAGS.log_freq,
-          ckpt_freq=FLAGS.log_freq,
+          ckpt_freq=FLAGS.ckpt_freq,
           base_dir=FLAGS.base_dir,
           render=FLAGS.render,
           atari=FLAGS.atari)
