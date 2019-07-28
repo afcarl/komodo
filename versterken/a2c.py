@@ -1,5 +1,8 @@
+import gym
+import numpy as np
 import tensorflow as tf
 from versterken.atari import rgb_to_grayscale
+from versterken.keras import clip_by_norm
 
 class ActorCritic():
 
@@ -7,10 +10,10 @@ class ActorCritic():
             self,
             placeholders,
             networks,
-            lr=0.001,
-            beta=0.,
-            update_freq=5,
-            gamma=1.,
+            lr=0.0025,
+            beta=0.01,
+            update_freq=4,
+            gamma=1.0,
             history=1,
             device='/cpu:0',
             atari=False
@@ -40,8 +43,20 @@ class ActorCritic():
             )
 
             # updates
-            value_update = tf.train.AdamOptimizer(learning_rate=lr).minimize(value_loss)
-            policy_update = tf.train.AdamOptimizer(learning_rate=lr).minimize(policy_loss + entropy_loss)
+            # value_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
+            value_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
+            value_gradients = value_optimizer.compute_gradients(value_loss)
+            value_gradients = clip_by_norm(value_gradients, clip_norm=0.1)
+            value_update = value_optimizer.apply_gradients(value_gradients)
+
+            # policy_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
+            policy_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
+            policy_gradients = policy_optimizer.compute_gradients(policy_loss)
+            policy_gradients = clip_by_norm(policy_gradients, clip_norm=0.1)
+            policy_update = policy_optimizer.apply_gradients(policy_gradients)
+
+            # value_update = tf.train.AdamOptimizer(learning_rate=lr).minimize(value_loss)
+            # policy_update = tf.train.AdamOptimizer(learning_rate=lr).minimize(policy_loss + entropy_loss)
 
             # action selection
             action_sample = tf.squeeze(tf.multinomial(logits=policy_logits, num_samples=1), axis=1)
@@ -70,25 +85,44 @@ class ActorCritic():
         self.update_freq = update_freq
         self.gamma = gamma
         self.history = history
+        self.atari = atari
 
         # preprocessor
         self.frame_pl = tf.placeholder(tf.uint8, [210, 160, 3])
         self.preprocess_op = rgb_to_grayscale(self.frame_pl)  # uint8, 84 x 84
 
     def action(self, state, sess):
-        return sess.run(self.action_sample, feed_dict={self.states_pl: state})[0]
-
-    def targets(self, terminal_state, rewards, done, sess):
-        if done:
-            terminal_value = 0.0
+        if self.atari:
+            feed_dict = {self.states_pl: state.reshape(1, 84, 84, agent.history)}
         else:
-            terminal_value = sess.run(
-                self.values,
-                feed_dict={
-                    self.states_pl: terminal_state
-                }
-            )
-        return bootstrapped_values(terminal_value, rewards, self.gamma)
+            feed_dict = {self.states_pl: state.reshape(1, -1)}
+        return sess.run(self.action_sample, feed_dict=feed_dict)[0]
+
+    def targets(self, terminal_states, rewards, flags, sess):
+
+        n = len(terminal_states)
+
+        if self.atari:
+            feed_dict = {
+                self.states_pl: np.reshape(terminal_states, (n, 84, 84, agent.history))
+            }
+        else:
+            feed_dict = {
+                self.states_pl: np.reshape(terminal_states, (n, -1))
+            }
+
+        terminal_values = sess.run(
+            self.values,
+            feed_dict={
+                self.states_pl: terminal_states
+            }
+        )
+        # print(terminal_values)
+        # print(flags)
+        terminal_values *= ~np.array(flags)
+        # print(terminal_values)
+        targets = [bootstrapped_values(tv, r, self.gamma) for tv, r in zip(terminal_values, rewards)]
+        return np.concatenate(targets)
 
     def preprocess(self, frame, sess):
         return sess.run(self.preprocess_op, {self.frame_pl: frame})
@@ -125,24 +159,36 @@ class Generator():
 
     def __init__(self, id, agent):
         self.env = gym.make(id)
+        self.agent = agent
         self.states = []
         self.actions = []
         self.rewards = []
         self.state = self.env.reset()
+        self.total = 0
+        self.steps = 0
 
-    def sample(self, n):
+    def sample(self, n, sess):
         self.states.clear()
         self.actions.clear()
         self.rewards.clear()
         for i in range(n):
             state = self.state
-            action = self.agent.action(self.state)  # TODO: reshape state
+            if self.agent is not None:
+                # print("agent.action called!")
+                action = self.agent.action(self.state, sess)
+            else:
+                action = self.env.action_space.sample()
             next_state, reward, done, info = self.env.step(action)
             self.states += [state]
             self.actions += [action]
             self.rewards += [reward]
             self.state = next_state
+            self.total += reward
+            self.steps += 1
+            info = (self.total, self.steps)
             if done:
                 self.state = self.env.reset()
+                self.total = 0
+                self.steps = 0
                 break
-        return self.states, self.actions, self.rewards, next_state, done
+        return self.states, self.actions, self.rewards, next_state, done, info

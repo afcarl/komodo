@@ -7,7 +7,7 @@ import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress all messages
 tf.logging.set_verbosity(tf.logging.ERROR)
 from datetime import datetime
-from versterken.a2c import ActorCritic
+from versterken.a2c import ActorCritic, Generator
 from versterken.atari import collect_frames
 from versterken.queue import Queue
 from versterken.utils import create_directories, log_scalar, log_episode, print_items
@@ -30,7 +30,7 @@ def run_episode(env, agent, sess, writer, global_step, render=False):
     start_time = time.time()
     while True:
         # perform an action
-        action = agent.action(state.reshape(1, -1), sess)
+        action = agent.action(state, sess)
         next_state, reward, done, info = env.step(action)
         if render == True:
             env.render()
@@ -46,7 +46,7 @@ def run_episode(env, agent, sess, writer, global_step, render=False):
         global_step += 1
         if episode_steps % agent.update_freq == 0 or done:
             # update networks
-            targets = agent.targets(state.reshape(1, -1), rewards, done, sess)
+            targets = agent.targets(state, rewards, done, sess)
             summary = agent.update(states, actions, targets, sess)
             writer.add_summary(summary, global_step)
             # reset arrays
@@ -73,7 +73,7 @@ def run_atari(env, agent, sess, writer, global_step, render=False):
     start_time = time.time()
     while True:
         # perform an action
-        action = agent.action(state.reshape(1, 84, 84, agent.history), sess)
+        action = agent.action(state, sess)
         obs, reward, done, info = env.step(action)
         if render == True:
             env.render()
@@ -91,7 +91,7 @@ def run_atari(env, agent, sess, writer, global_step, render=False):
         global_step += 1
         if episode_steps % agent.update_freq == 0 or done:
             # update networks
-            targets = agent.targets(state.reshape(1, 84, 84, agent.history), rewards, done, sess)
+            targets = agent.targets(state, rewards, done, sess)
             summary = agent.update(states, actions, targets, sess)
             writer.add_summary(summary, global_step)
             # reset arrays
@@ -228,6 +228,118 @@ def train(env_name='CartPole-v0',
                 print("passed!")
                 break
 
+def generate_batch(generators, n, sess):
+    batch_states = []
+    batch_actions = []
+    batch_rewards = []
+    batch_next_state = []
+    batch_flags = []
+    batch_total = []
+    batch_steps = []
+    for g in generators:
+        states, actions, rewards, next_state, done, info = g.sample(n, sess)
+        total, steps = info
+        batch_states += states
+        batch_actions += actions
+        batch_rewards += [rewards]
+        batch_next_state += [next_state]
+        batch_flags += [done]
+        batch_total += [total]
+        batch_steps += [steps]
+    return (batch_states,
+            batch_actions,
+            batch_rewards,
+            batch_next_state,
+            batch_flags,
+            batch_total,
+            batch_steps)
+
+def analyze_batch(data):
+    _, _, _, _, flags, totals, steps = data
+    episodes = 0
+    scores = []
+    for idx, done in enumerate(flags):
+        # print(f"idx={idx}, done={done}")
+        if done:
+            episodes += 1
+            scores += [totals[idx]]
+    return episodes, scores, sum(steps)
+
+
+def run(nthreads, tmax, device='/cpu:0'):
+    """Run simultaneous episodes and perform updates."""
+
+    hidden_units = [64]
+    state_dim = 4
+    action_dim = 2
+
+    print("Creating graph...")
+    # env = gym.make(env_name)
+    # action_dim = env.action_space.n
+    # state_dim = env.observation_space.shape[0]
+    with tf.device(device):
+        states_pl = tf.placeholder(tf.float32, [None, 4], name='states')
+        actions_pl = tf.placeholder(tf.int32, [None], name='actions')
+        targets_pl = tf.placeholder(tf.float32, [None], name='targets')
+        values = mlp(states_pl, hidden_units + [1], tf.tanh, scope='value')
+        policy_logits = mlp(states_pl, hidden_units + [action_dim], tf.tanh, scope='policy')
+
+    print("Creating agent...")
+    placeholders = {
+        'states': states_pl,
+        'actions': actions_pl,
+        'targets': targets_pl
+    }
+    networks = {
+        'value': values,
+        'policy': policy_logits
+    }
+    agent = ActorCritic(placeholders, networks)
+
+
+    # create generators
+    generators = [Generator('CartPole-v0', agent) for _ in range(nthreads)]
+
+    # state
+    global_step = 0
+    global_episode = 0
+    global_updates = 0
+    global_scores = []
+    start = time.time()
+
+    # repeat
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        # while global_episode < 25:
+        while True:
+
+            # generate a batch
+            data = generate_batch(generators, tmax, sess)
+            episodes, scores, total_steps = analyze_batch(data)
+
+            # perform an update
+            states, actions, rewards, next_states, flags, totals, steps = data
+            targets = agent.targets(next_states, rewards, flags, sess)
+            summary = agent.update(states, actions, targets, sess)
+
+            # logging
+            global_updates += 1
+            global_step += total_steps
+            global_episode += episodes
+            global_time = time.time() - start
+            global_scores.extend(scores)
+            if episodes > 0:
+                if len(global_scores) > 0:
+                    avg_return = sum(global_scores[-100:]) / min(len(global_scores), 100)
+                else:
+                    avg_return = 0.0
+                print(f"updates={global_updates}, steps={global_step}, episodes={global_episode}, avg_return={avg_return:.2f}, elapsed={global_time:.2f}")
+
+                if avg_return > 195.0:
+                    print("passed!")
+                    break
+
+            # saving
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('env_name', 'Pong-v4', """Gym environment.""")
@@ -247,18 +359,19 @@ tf.app.flags.DEFINE_boolean('render', True, """Render episodes (once per `ckpt_f
 tf.app.flags.DEFINE_boolean('atari', True, """Is it an Atari environment?""")
 
 if __name__ == "__main__":
-    train(env_name=FLAGS.env_name,
-          device=FLAGS.device,
-          hidden_units=[int(i) for i in FLAGS.hidden_units.split(',')],  # ignored if atari == False
-          learning_rate=FLAGS.learning_rate,
-          beta=FLAGS.beta,
-          discount_factor=FLAGS.discount_factor,
-          update_freq=FLAGS.update_freq,
-          agent_history=FLAGS.agent_history,
-          max_episodes=FLAGS.max_episodes,
-          pass_condition=FLAGS.pass_condition,
-          log_freq=FLAGS.log_freq,
-          ckpt_freq=FLAGS.ckpt_freq,
-          base_dir=FLAGS.base_dir,
-          render=FLAGS.render,
-          atari=FLAGS.atari)
+    run(nthreads=16, tmax=4)
+    # train(env_name=FLAGS.env_name,
+    #       device=FLAGS.device,
+    #       hidden_units=[int(i) for i in FLAGS.hidden_units.split(',')],  # ignored if atari == False
+    #       learning_rate=FLAGS.learning_rate,
+    #       beta=FLAGS.beta,
+    #       discount_factor=FLAGS.discount_factor,
+    #       update_freq=FLAGS.update_freq,
+    #       agent_history=FLAGS.agent_history,
+    #       max_episodes=FLAGS.max_episodes,
+    #       pass_condition=FLAGS.pass_condition,
+    #       log_freq=FLAGS.log_freq,
+    #       ckpt_freq=FLAGS.ckpt_freq,
+    #       base_dir=FLAGS.base_dir,
+    #       render=FLAGS.render,
+    #       atari=FLAGS.atari)
