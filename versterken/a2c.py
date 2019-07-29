@@ -1,8 +1,9 @@
 import gym
 import numpy as np
 import tensorflow as tf
-from versterken.atari import rgb_to_grayscale
+from versterken.atari import rgb_to_grayscale, collect_frames
 from versterken.keras import clip_by_norm
+from versterken.queue import Queue
 
 class ActorCritic():
 
@@ -10,11 +11,11 @@ class ActorCritic():
             self,
             placeholders,
             networks,
-            lr=0.0025,
+            lr=0.001,
             beta=0.01,
             update_freq=4,
-            gamma=1.0,
-            history=1,
+            gamma=0.99,
+            history=4,
             device='/cpu:0',
             atari=False
         ):
@@ -43,14 +44,14 @@ class ActorCritic():
             )
 
             # updates
-            # value_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
-            value_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
+            value_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
+            # value_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
             value_gradients = value_optimizer.compute_gradients(value_loss)
             value_gradients = clip_by_norm(value_gradients, clip_norm=0.1)
             value_update = value_optimizer.apply_gradients(value_gradients)
 
-            # policy_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
-            policy_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
+            policy_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
+            # policy_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
             policy_gradients = policy_optimizer.compute_gradients(policy_loss)
             policy_gradients = clip_by_norm(policy_gradients, clip_norm=0.1)
             policy_update = policy_optimizer.apply_gradients(policy_gradients)
@@ -62,11 +63,8 @@ class ActorCritic():
             action_sample = tf.squeeze(tf.multinomial(logits=policy_logits, num_samples=1), axis=1)
 
         # tensorboard
-        tf.summary.histogram('values', values)
-        tf.summary.histogram('policy_logits', policy_logits)
-        tf.summary.histogram('value_loss', value_loss)
-        tf.summary.histogram('policy_loss', policy_loss)
-        tf.summary.histogram('entropy_loss', entropy_loss)
+        tf.summary.histogram('value_gradient_norm', tf.norm(value_gradients[0][0]))
+        # tf.summary.histogram('policy_gradient_norm', tf.norm(policy_gradients))
         summary_op = tf.summary.merge_all()
 
         # checkpoints
@@ -93,7 +91,7 @@ class ActorCritic():
 
     def action(self, state, sess):
         if self.atari:
-            feed_dict = {self.states_pl: state.reshape(1, 84, 84, agent.history)}
+            feed_dict = {self.states_pl: state.reshape(1, 84, 84, self.history)}
         else:
             feed_dict = {self.states_pl: state.reshape(1, -1)}
         return sess.run(self.action_sample, feed_dict=feed_dict)[0]
@@ -104,7 +102,7 @@ class ActorCritic():
 
         if self.atari:
             feed_dict = {
-                self.states_pl: np.reshape(terminal_states, (n, 84, 84, agent.history))
+                self.states_pl: np.reshape(terminal_states, (n, 84, 84, self.history))
             }
         else:
             feed_dict = {
@@ -188,6 +186,53 @@ class Generator():
             info = (self.total, self.steps)
             if done:
                 self.state = self.env.reset()
+                self.total = 0
+                self.steps = 0
+                break
+        return self.states, self.actions, self.rewards, next_state, done, info
+
+class AtariGenerator():
+
+    def __init__(self, id, agent):
+        self.env = gym.make(id)
+        self.agent = agent
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.obs_queue = None
+        self.state = None
+        self.total = 0
+        self.steps = 0
+
+    def sample(self, n, sess):
+        if self.steps == 0:  # reset observation queue, state
+            obs = self.env.reset()
+            self.obs_queue = Queue(
+                init_values=[self.agent.preprocess(obs, sess)],
+                size=self.agent.history
+            )
+            self.state = collect_frames(self.obs_queue, nframes=self.agent.history)
+        self.states.clear()
+        self.actions.clear()
+        self.rewards.clear()
+        for i in range(n):
+            state = self.state
+            if self.agent is not None:
+                # print("agent.action called!")
+                action = self.agent.action(state, sess)
+            else:
+                action = self.env.action_space.sample()
+            obs, reward, done, info = self.env.step(action)
+            self.obs_queue.push(self.agent.preprocess(obs, sess))
+            next_state = collect_frames(self.obs_queue, nframes=self.agent.history)
+            self.states += [state]
+            self.actions += [action]
+            self.rewards += [reward]
+            self.state = next_state
+            self.total += reward
+            self.steps += 1
+            info = (self.total, i + 1)
+            if done:
                 self.total = 0
                 self.steps = 0
                 break
