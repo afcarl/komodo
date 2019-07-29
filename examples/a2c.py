@@ -7,7 +7,7 @@ import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress all messages
 tf.logging.set_verbosity(tf.logging.ERROR)
 from datetime import datetime
-from versterken.a2c import ActorCritic, Generator
+from versterken.a2c import ActorCritic, Generator, AtariGenerator
 from versterken.atari import collect_frames
 from versterken.queue import Queue
 from versterken.utils import create_directories, log_scalar, log_episode, print_items
@@ -272,11 +272,9 @@ def run(nthreads, tmax, device='/cpu:0'):
     hidden_units = [64]
     state_dim = 4
     action_dim = 2
+    base_dir = './examples'
 
-    print("Creating graph...")
-    # env = gym.make(env_name)
-    # action_dim = env.action_space.n
-    # state_dim = env.observation_space.shape[0]
+    print('Creating graph on device: {}'.format(device))
     with tf.device(device):
         states_pl = tf.placeholder(tf.float32, [None, 4], name='states')
         actions_pl = tf.placeholder(tf.int32, [None], name='actions')
@@ -296,21 +294,29 @@ def run(nthreads, tmax, device='/cpu:0'):
     }
     agent = ActorCritic(placeholders, networks)
 
+    print("Setting up directories...")
+    if base_dir is not None:
+        ckpt_dir, log_dir, meta_dir = create_directories('CartPole-v0', "a2c", base_dir)
+        meta = {
+            'env_name': 'CartPole-v0',
+        }
+        with open(meta_dir + '/meta.json', 'w') as file:
+            json.dump(meta, file, indent=2)
+    else:
+        ckpt_dir = log_dir = None
 
-    # create generators
+    print("Starting training...")
     generators = [Generator('CartPole-v0', agent) for _ in range(nthreads)]
-
-    # state
     global_step = 0
     global_episode = 0
-    global_updates = 0
+    global_update = 0
     global_scores = []
     start = time.time()
-
-    # repeat
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
-        # while global_episode < 25:
+        now = datetime.today()
+        date_string = now.strftime("%Y-%m-%d-%H:%M:%S.%f")
+        writer = tf.summary.FileWriter(log_dir + '/' + date_string, sess.graph)
         while True:
 
             # generate a batch
@@ -323,7 +329,106 @@ def run(nthreads, tmax, device='/cpu:0'):
             summary = agent.update(states, actions, targets, sess)
 
             # logging
-            global_updates += 1
+            global_update += 1
+            global_step += total_steps
+            global_episode += episodes
+            global_time = time.time() - start
+            global_scores.extend(scores)
+            if global_update % 100 == 0:
+                if len(global_scores) > 0:
+                    avg_return = sum(global_scores[-100:]) / min(len(global_scores), 100)
+                else:
+                    avg_return = np.nan
+                print(f"updates={global_update}, steps={global_step}, episodes={global_episode}, avg_return={avg_return:.2f}, elapsed={global_time:.2f}")
+                log_scalar(writer, 'avg_return', avg_return, global_step)
+                writer.add_summary(summary, global_step)
+
+                if global_update % 10000 == 0:
+                    if ckpt_dir is not None:
+                        agent.save(ckpt_dir + "/ckpt", global_step, sess)
+                if avg_return > 195.0:
+                    print("passed!")
+                    break
+
+            # saving
+
+def run_atari(nthreads, tmax, device='/gpu:0'):
+    """Run simultaneous episodes and perform updates."""
+
+    base_dir = './examples'
+
+    print('Creating graph on device: {}'.format(device))
+    with tf.device(device):
+        states_pl = tf.placeholder(tf.float32, [None, 84, 84, 4], name='states')
+        actions_pl = tf.placeholder(tf.int32, [None], name='actions')
+        targets_pl = tf.placeholder(tf.float32, [None], name='targets')
+        values = cnn(
+            tf.cast(states_pl, tf.float32) / 255.0,
+            1,
+            scope='value'
+        )
+        policy_logits = cnn(
+            tf.cast(states_pl, tf.float32) / 255.0,
+            6,
+            scope='policy'
+        )
+
+    print("Creating agent...")
+    placeholders = {
+        'states': states_pl,
+        'actions': actions_pl,
+        'targets': targets_pl
+    }
+    networks = {
+        'value': values,
+        'policy': policy_logits
+    }
+    agent = ActorCritic(
+        placeholders,
+        networks,
+        lr=0.001,
+        gamma=0.99,
+        history=4,
+        device='/gpu:0',
+        atari=True
+    )
+
+    print("Setting up directories...")
+    if base_dir is not None:
+        ckpt_dir, log_dir, meta_dir = create_directories('Pong-v4', "a2c", base_dir)
+        meta = {
+            'env_name': 'Pong-v4',
+        }
+        with open(meta_dir + '/meta.json', 'w') as file:
+            json.dump(meta, file, indent=2)
+    else:
+        ckpt_dir = log_dir = None
+
+    print("Starting training...")
+    generators = [AtariGenerator('Pong-v4', agent) for _ in range(nthreads)]
+    global_step = 0
+    global_episode = 0
+    global_update = 0
+    global_scores = []
+    start = time.time()
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        now = datetime.today()
+        date_string = now.strftime("%Y-%m-%d-%H:%M:%S.%f")
+        writer = tf.summary.FileWriter(log_dir + '/' + date_string, sess.graph)
+        while True:
+
+            # generate a batch
+            data = generate_batch(generators, tmax, sess)
+            episodes, scores, total_steps = analyze_batch(data)
+
+            # perform an update
+            states, actions, rewards, next_states, flags, totals, steps = data
+            targets = agent.targets(next_states, rewards, flags, sess)
+            summary = agent.update(states, actions, targets, sess)
+
+            # logging
+            global_update += 1
             global_step += total_steps
             global_episode += episodes
             global_time = time.time() - start
@@ -332,34 +437,39 @@ def run(nthreads, tmax, device='/cpu:0'):
                 if len(global_scores) > 0:
                     avg_return = sum(global_scores[-100:]) / min(len(global_scores), 100)
                 else:
-                    avg_return = 0.0
-                print(f"updates={global_updates}, steps={global_step}, episodes={global_episode}, avg_return={avg_return:.2f}, elapsed={global_time:.2f}")
-
-                if avg_return > 195.0:
+                    avg_return = np.nan
+                print(f"updates={global_update}, steps={global_step}, episodes={global_episode}, avg_return={avg_return:.2f}, elapsed={global_time:.2f}, batch_steps={total_steps}")
+                log_scalar(writer, 'avg_return', avg_return, global_step)
+                writer.add_summary(summary, global_step)
+                if avg_return > 19.5:
+                    agent.save(ckpt_dir + "/ckpt", global_step, sess)
                     print("passed!")
                     break
 
             # saving
 
-FLAGS = tf.app.flags.FLAGS
-tf.app.flags.DEFINE_string('env_name', 'Pong-v4', """Gym environment.""")
-tf.app.flags.DEFINE_string('device', '/gpu:0', """'/cpu:0' or '/gpu:0'.""")
-tf.app.flags.DEFINE_string('hidden_units', '64', """Size of hidden layers.""")
-tf.app.flags.DEFINE_float('learning_rate', 0.001, """Initial learning rate.""")
-tf.app.flags.DEFINE_float('beta', 0.01, """Entropy penalty strength.""")
-tf.app.flags.DEFINE_float('discount_factor', 0.99, """Discount factor in update.""")
-tf.app.flags.DEFINE_integer('update_freq', 8, """Number of actions between updates.""")
-tf.app.flags.DEFINE_integer('agent_history', 4, """Number of actions between updates.""")
-tf.app.flags.DEFINE_integer('max_episodes', 10000, """Episodes per train/test run.""")
-tf.app.flags.DEFINE_float('pass_condition', 19.5, """Average score considered passing environment.""")
-tf.app.flags.DEFINE_integer('ckpt_freq', 10, """Episodes per checkpoint.""")
-tf.app.flags.DEFINE_integer('log_freq', 1, """Steps per log.""")
-tf.app.flags.DEFINE_string('base_dir', '.', """Base directory for checkpoints and logs.""")
-tf.app.flags.DEFINE_boolean('render', True, """Render episodes (once per `ckpt_freq` in training mode).""")
-tf.app.flags.DEFINE_boolean('atari', True, """Is it an Atari environment?""")
+
+# FLAGS = tf.app.flags.FLAGS
+# tf.app.flags.DEFINE_string('env_name', 'Pong-v4', """Gym environment.""")
+# tf.app.flags.DEFINE_string('device', '/gpu:0', """'/cpu:0' or '/gpu:0'.""")
+# tf.app.flags.DEFINE_string('hidden_units', '64', """Size of hidden layers.""")
+# tf.app.flags.DEFINE_float('learning_rate', 0.001, """Initial learning rate.""")
+# tf.app.flags.DEFINE_float('beta', 0.01, """Entropy penalty strength.""")
+# tf.app.flags.DEFINE_float('discount_factor', 0.99, """Discount factor in update.""")
+# tf.app.flags.DEFINE_integer('update_freq', 8, """Number of actions between updates.""")
+# tf.app.flags.DEFINE_integer('agent_history', 4, """Number of actions between updates.""")
+# tf.app.flags.DEFINE_integer('max_episodes', 10000, """Episodes per train/test run.""")
+# tf.app.flags.DEFINE_float('pass_condition', 19.5, """Average score considered passing environment.""")
+# tf.app.flags.DEFINE_integer('ckpt_freq', 10, """Episodes per checkpoint.""")
+# tf.app.flags.DEFINE_integer('log_freq', 1, """Steps per log.""")
+# tf.app.flags.DEFINE_string('base_dir', '.', """Base directory for checkpoints and logs.""")
+# tf.app.flags.DEFINE_boolean('render', True, """Render episodes (once per `ckpt_freq` in training mode).""")
+# tf.app.flags.DEFINE_boolean('atari', True, """Is it an Atari environment?""")
 
 if __name__ == "__main__":
-    run(nthreads=16, tmax=4)
+    # run(nthreads=16, tmax=4)
+    run_atari(nthreads=32, tmax=4)
+
     # train(env_name=FLAGS.env_name,
     #       device=FLAGS.device,
     #       hidden_units=[int(i) for i in FLAGS.hidden_units.split(',')],  # ignored if atari == False
