@@ -11,7 +11,7 @@ from versterken.a2c import ActorCritic, Generator, AtariGenerator
 from versterken.atari import collect_frames
 from versterken.queue import Queue
 from versterken.utils import create_directories, log_scalar, log_episode, print_items
-from versterken.keras import mlp, cnn
+from versterken.keras import mlp, cnn, cnn_a2c
 
 # TODO: gradient clipping?
 # TODO: multiple environments?
@@ -106,9 +106,9 @@ def run_atari(env, agent, sess, writer, global_step, render=False):
 def train(env_name='CartPole-v0',
           device='/cpu:0',
           hidden_units=[64],
-          learning_rate=1e-3,
-          beta=0.0,
-          discount_factor=1.0,
+          learning_rate=0.001,
+          beta=0.01,
+          discount_factor=0.99,
           update_freq=4,
           agent_history=1,
           max_episodes=1000,
@@ -362,16 +362,17 @@ def run_atari(nthreads, tmax, device='/gpu:0'):
         states_pl = tf.placeholder(tf.float32, [None, 84, 84, 4], name='states')
         actions_pl = tf.placeholder(tf.int32, [None], name='actions')
         targets_pl = tf.placeholder(tf.float32, [None], name='targets')
-        values = cnn(
-            tf.cast(states_pl, tf.float32) / 255.0,
-            1,
-            scope='value'
-        )
-        policy_logits = cnn(
-            tf.cast(states_pl, tf.float32) / 255.0,
-            6,
-            scope='policy'
-        )
+        # values = cnn(
+        #     tf.cast(states_pl, tf.float32) / 255.0,
+        #     1,
+        #     scope='value'
+        # )
+        # policy_logits = cnn(
+        #     tf.cast(states_pl, tf.float32) / 255.0,
+        #     6,
+        #     scope='policy'
+        # )
+        values, policy_logits = cnn_a2c(tf.cast(states_pl, tf.float32) / 255.0, 6)
 
     print("Creating agent...")
     placeholders = {

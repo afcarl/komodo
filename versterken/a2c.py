@@ -12,10 +12,11 @@ class ActorCritic():
             placeholders,
             networks,
             lr=0.001,
-            beta=0.01,
+            entropy_beta=0.01,
             update_freq=4,
             gamma=0.99,
             history=4,
+            clip_norm=0.1,
             device='/cpu:0',
             atari=False
         ):
@@ -31,33 +32,28 @@ class ActorCritic():
             values = networks['value']
             policy_logits = networks['policy']
             action_mask = tf.one_hot(actions_pl, int(policy_logits.shape[1]))
-            policy = tf.reduce_sum(action_mask * tf.nn.log_softmax(policy_logits), axis=1)  # π(a | s)
+            policy = tf.reduce_sum(action_mask * tf.nn.log_softmax(policy_logits), axis=1)
 
             # losses
-            policy_loss = -tf.reduce_mean(policy * (targets_pl - tf.stop_gradient(values)))
             value_loss = tf.reduce_mean(tf.square(targets_pl - values))
-            entropy_loss = beta * tf.reduce_mean(
+            entropy_loss = entropy_beta * tf.reduce_mean(
                 tf.multiply(
                     tf.nn.softmax(policy_logits),  # probabilities
                     tf.nn.log_softmax(policy_logits)  # log probabilities
                 )
             )
+            policy_loss = -tf.reduce_mean(policy * (targets_pl - tf.stop_gradient(values))) + entropy_loss
 
             # updates
             value_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
-            # value_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
             value_gradients = value_optimizer.compute_gradients(value_loss)
-            value_gradients = clip_by_norm(value_gradients, clip_norm=0.1)
+            value_gradients = clip_by_norm(value_gradients, clip_norm=clip_norm)
             value_update = value_optimizer.apply_gradients(value_gradients)
 
             policy_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
-            # policy_optimizer = tf.train.RMSPropOptimizer(learning_rate=lr)
             policy_gradients = policy_optimizer.compute_gradients(policy_loss)
-            policy_gradients = clip_by_norm(policy_gradients, clip_norm=0.1)
+            policy_gradients = clip_by_norm(policy_gradients, clip_norm=clip_norm)
             policy_update = policy_optimizer.apply_gradients(policy_gradients)
-
-            # value_update = tf.train.AdamOptimizer(learning_rate=lr).minimize(value_loss)
-            # policy_update = tf.train.AdamOptimizer(learning_rate=lr).minimize(policy_loss + entropy_loss)
 
             # action selection
             action_sample = tf.squeeze(tf.multinomial(logits=policy_logits, num_samples=1), axis=1)
