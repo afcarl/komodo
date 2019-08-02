@@ -11,14 +11,14 @@ class ActorCritic():
             self,
             placeholders,
             networks,
-            lr=0.001,
+            lr=0.0005,  # 0.001
             entropy_beta=0.01,
-            update_freq=4,
+            update_freq=5,  # 4
             gamma=0.99,
             history=4,
             clip_norm=0.1,
-            device='/cpu:0',
-            atari=False
+            device='/gpu:0',
+            atari=True
         ):
 
         # construct graph
@@ -35,32 +35,41 @@ class ActorCritic():
             policy = tf.reduce_sum(action_mask * tf.nn.log_softmax(policy_logits), axis=1)
 
             # losses
-            value_loss = tf.reduce_mean(tf.square(targets_pl - values))
+            value_loss = 0.5 * tf.reduce_mean(tf.square(targets_pl - values))
             entropy_loss = entropy_beta * tf.reduce_mean(
                 tf.multiply(
                     tf.nn.softmax(policy_logits),  # probabilities
                     tf.nn.log_softmax(policy_logits)  # log probabilities
                 )
             )
-            policy_loss = -tf.reduce_mean(policy * (targets_pl - tf.stop_gradient(values))) + entropy_loss
+            policy_loss = -tf.reduce_mean(policy * (targets_pl - tf.stop_gradient(values)))
+            # policy_loss = -tf.reduce_mean(policy * (targets_pl - tf.stop_gradient(values))) + entropy_loss
+
+            loss = policy_loss + entropy_loss + value_loss
+            optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
+            gradients = clip_by_norm(optimizer.compute_gradients(loss), clip_norm=clip_norm)
+            train_op = optimizer.apply_gradients(gradients)
 
             # updates
-            value_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
-            value_gradients = value_optimizer.compute_gradients(value_loss)
-            value_gradients = clip_by_norm(value_gradients, clip_norm=clip_norm)
-            value_update = value_optimizer.apply_gradients(value_gradients)
-
-            policy_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
-            policy_gradients = policy_optimizer.compute_gradients(policy_loss)
-            policy_gradients = clip_by_norm(policy_gradients, clip_norm=clip_norm)
-            policy_update = policy_optimizer.apply_gradients(policy_gradients)
+            # value_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
+            # value_gradients = value_optimizer.compute_gradients(value_loss)
+            # value_gradients = clip_by_norm(value_gradients, clip_norm=clip_norm)
+            # value_update = value_optimizer.apply_gradients(value_gradients)
+            # policy_optimizer = tf.train.AdamOptimizer(learning_rate=lr, epsilon=1e-3)
+            # policy_gradients = policy_optimizer.compute_gradients(policy_loss)
+            # policy_gradients = clip_by_norm(policy_gradients, clip_norm=clip_norm)
+            # policy_update = policy_optimizer.apply_gradients(policy_gradients)
 
             # action selection
             action_sample = tf.squeeze(tf.multinomial(logits=policy_logits, num_samples=1), axis=1)
 
         # tensorboard
-        tf.summary.histogram('value_gradient_norm', tf.norm(value_gradients[0][0]))
-        # tf.summary.histogram('policy_gradient_norm', tf.norm(policy_gradients))
+        tf.summary.scalar('gradient_norm', tf.norm(gradients[0][0]))
+        # tf.summary.scalar('value_gradient_norm', tf.norm(value_gradients[0][0]))
+        # tf.summary.scalar('policy_gradient_norm', tf.norm(policy_gradients[0][0]))
+        tf.summary.scalar('entropy', -entropy_loss / entropy_beta)
+        tf.summary.histogram('policy', policy_logits)
+        tf.summary.histogram('value', values)
         summary_op = tf.summary.merge_all()
 
         # checkpoints
@@ -71,8 +80,9 @@ class ActorCritic():
         self.actions_pl = actions_pl
         self.targets_pl = targets_pl
         self.values = values
-        self.policy_update = policy_update
-        self.value_update = value_update
+        # self.policy_update = policy_update
+        # self.value_update = value_update
+        self.train_op = train_op
         self.action_sample = action_sample
         self.summary_op = summary_op
         self.saver = saver
@@ -121,20 +131,37 @@ class ActorCritic():
     def preprocess(self, frame, sess):
         return sess.run(self.preprocess_op, {self.frame_pl: frame})
 
-    def update(self, states, actions, targets, sess):
-        summary, _, _ = sess.run(
-            [
-                self.summary_op,
-                self.policy_update,
-                self.value_update
-            ],
-            feed_dict={
-                self.states_pl: states,
-                self.actions_pl: actions,
-                self.targets_pl: targets
-            }
-        )
-        return summary
+    def update(self, states, actions, targets, sess, logging=False):
+        if logging:
+            # summary, _, _ = sess.run(
+            summary, _ = sess.run(
+                [
+                    self.summary_op,
+                    # self.policy_update,
+                    # self.value_update
+                    self.train_op,
+                ],
+                feed_dict={
+                    self.states_pl: states,
+                    self.actions_pl: actions,
+                    self.targets_pl: targets
+                }
+            )
+            return summary
+        else:
+            sess.run(
+                [
+                    self.train_op
+                    # self.policy_update,
+                    # self.value_update
+                ],
+                feed_dict={
+                    self.states_pl: states,
+                    self.actions_pl: actions,
+                    self.targets_pl: targets
+                }
+            )
+            return None
 
     def save(self, path, step, sess):
         self.saver.save(sess, save_path=path, global_step=step)

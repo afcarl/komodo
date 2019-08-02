@@ -387,11 +387,6 @@ def run_atari(nthreads, tmax, device='/gpu:0'):
     agent = ActorCritic(
         placeholders,
         networks,
-        lr=0.001,
-        gamma=0.99,
-        history=4,
-        device='/gpu:0',
-        atari=True
     )
 
     print("Setting up directories...")
@@ -426,7 +421,10 @@ def run_atari(nthreads, tmax, device='/gpu:0'):
             # perform an update
             states, actions, rewards, next_states, flags, totals, steps = data
             targets = agent.targets(next_states, rewards, flags, sess)
-            summary = agent.update(states, actions, targets, sess)
+            if episodes > 0:
+                summary = agent.update(states, actions, targets, sess, logging=True)
+            else:
+                agent.update(states, actions, targets, sess, logging=False)
 
             # logging
             global_update += 1
@@ -469,7 +467,7 @@ def run_atari(nthreads, tmax, device='/gpu:0'):
 
 if __name__ == "__main__":
     # run(nthreads=16, tmax=4)
-    run_atari(nthreads=32, tmax=4)
+    run_atari(nthreads=16, tmax=5)  # 32, 4
 
     # train(env_name=FLAGS.env_name,
     #       device=FLAGS.device,
