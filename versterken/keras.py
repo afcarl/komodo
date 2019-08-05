@@ -26,92 +26,85 @@ def mlp(x, sizes, activation, scope=''):
         else:
             return tf.layers.dense(x, units=sizes[-1])
 
-def cnn(x, output_dim, scope=''):
+def cnn(x, output_dim, scope='', shared=False):
+    if shared:
+        with tf.variable_scope(scope):
 
-    with tf.variable_scope(scope):
+            # conv1
+            x = tf.layers.conv2d(
+                inputs=x,
+                filters=32,
+                kernel_size=8,
+                strides=4,
+                padding='valid',
+                activation=tf.nn.relu)
 
-        # conv1
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=32,
-            kernel_size=8,
-            strides=4,
-            padding='valid',
-            activation=tf.nn.relu)
+            # conv2
+            x = tf.layers.conv2d(
+                inputs=x,
+                filters=64,
+                kernel_size=4,
+                strides=2,
+                padding='valid',
+                activation=tf.nn.relu)
 
-        # conv2
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=64,
-            kernel_size=4,
-            strides=2,
-            padding='valid',
-            activation=tf.nn.relu)
+            # conv3
+            x = tf.layers.conv2d(
+                inputs=x,
+                filters=64,
+                kernel_size=3,
+                strides=1,
+                padding='valid',
+                activation=tf.nn.relu)
 
-        # conv3
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=64,
-            kernel_size=3,
-            strides=1,
-            padding='valid',
-            activation=tf.nn.relu)
+            # dense
+            x = tf.layers.dense(tf.reshape(x, (-1, 64 * 7 * 7)), 512, tf.nn.relu)
 
-        # dense
-        x = tf.layers.dense(tf.reshape(x, (-1, 64 * 7 * 7)), 512, tf.nn.relu)
+            # value
+            values = tf.squeeze(tf.layers.dense(x, 1))
 
-        # output
-        if output_dim == 1:
-            return tf.squeeze(tf.layers.dense(x, output_dim))
-        else:
-            return tf.layers.dense(x, output_dim)
+            # policy
+            policy_logits = tf.layers.dense(x, output_dim)
 
-def cnn_a2c(x, output_dim, scope=''):
-    """
-        Convolutional network with seperate output for values and policy logits.
+            return values, policy_logits
+    else:
+        with tf.variable_scope(scope):
 
-        `output_dim`: number of actions in environment.
-    """
+            # conv1
+            x = tf.layers.conv2d(
+                inputs=x,
+                filters=32,
+                kernel_size=8,
+                strides=4,
+                padding='valid',
+                activation=tf.nn.relu)
 
-    with tf.variable_scope(scope):
+            # conv2
+            x = tf.layers.conv2d(
+                inputs=x,
+                filters=64,
+                kernel_size=4,
+                strides=2,
+                padding='valid',
+                activation=tf.nn.relu)
 
-        # conv1
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=32,
-            kernel_size=8,
-            strides=4,
-            padding='valid',
-            activation=tf.nn.relu)
+            # conv3
+            x = tf.layers.conv2d(
+                inputs=x,
+                filters=64,
+                kernel_size=3,
+                strides=1,
+                padding='valid',
+                activation=tf.nn.relu)
 
-        # conv2
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=64,
-            kernel_size=4,
-            strides=2,
-            padding='valid',
-            activation=tf.nn.relu)
+            # dense
+            x = tf.layers.dense(tf.reshape(x, (-1, 64 * 7 * 7)), 512, tf.nn.relu)
 
-        # conv3
-        x = tf.layers.conv2d(
-            inputs=x,
-            filters=64,
-            kernel_size=3,
-            strides=1,
-            padding='valid',
-            activation=tf.nn.relu)
-
-        # dense
-        x = tf.layers.dense(tf.reshape(x, (-1, 64 * 7 * 7)), 512, tf.nn.relu)
-
-        # value
-        values = tf.squeeze(tf.layers.dense(x, 1))
-
-        # policy
-        policy_logits = tf.layers.dense(x, output_dim)
-
-        return values, policy_logits
+            # output
+            if output_dim == 1:
+                return tf.squeeze(tf.layers.dense(x, output_dim))
+            else:
+                return tf.layers.dense(x, output_dim)
 
 def clip_by_norm(gradients, clip_norm):
     new_gradients = []

@@ -22,7 +22,10 @@ class Queue():
         else:
             self.queue.append(value)
 
-    def fill(self):
+    def fill(self, value=None):
         """Fill queue by copying the first element and pushing to left."""
         while len(self) < self.size:
-            self.queue.appendleft(self.queue[0])
+            if value is not None:
+                self.queue.appendleft(value)
+            else:
+                self.queue.appendleft(self.queue[0])
