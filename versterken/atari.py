@@ -9,7 +9,7 @@ class AtariEnvironment():
     def __init__(self, env, nframes=4, nrepeats=1):
         """
             `nframes`: number of *observed* frames per state
-            `nrepeats`: number of frames to repeat each action
+            `nrepeats`: number of *observed* frames to repeat each action
 
                 # Example (nframes = 4, nrepeats = 4)
 
@@ -21,11 +21,13 @@ class AtariEnvironment():
                                  o1]                               o1]
         """
         self.env = env
-        self.frame_queue = Queue(nframes)
+        self.nframes = nframes
+        self.frame_queue = Queue(self.nframes)
 
     def reset(self):
         """Reset environment. The initial 'state' is the first frame repeated `nframes` times."""
         frame = self.env.reset()
+        self.frame_queue = Queue(self.nframes)
         self.frame_queue.fill(preprocess(frame))
         return collect_frames(self.frame_queue)
 
@@ -47,7 +49,7 @@ def preprocess_tf(frame):
     return tf.squeeze(frame_resized)
 
 def preprocess(frame):
-    """Preprocess frame without TensorFlow."""
+    """Preprocess frame *without* TensorFlow."""
     frame_grayscale = rgb_to_grayscale(frame)
     frame_cropped = crop_to_bounding_box(frame_grayscale, 34, 0, 160, 160)
     frame_resized = resize_image(frame_cropped, (84, 84))

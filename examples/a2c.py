@@ -14,31 +14,34 @@ from versterken.keras import cnn
 
 def run_atari(nthreads, tmax, base_dir='./examples', device='/gpu:0'):
 
-    print('Creating graph on device: {}'.format(device))
-    with tf.device(device):
-        states_pl = tf.placeholder(tf.float32, [None, 84, 84, 4], name='states')
-        actions_pl = tf.placeholder(tf.int32, [None], name='actions')
-        rewards_pl = tf.placeholder(tf.float32, [None], name='rewards')
-        flags_pl = tf.placeholder(tf.float32, [None], name='flags')
-        targets_pl = tf.placeholder(tf.float32, [None], name='targets')
-        values, policy_logits = cnn(states_pl / 255.0, 6, shared=True)
+    # print('Creating graph on device: {}'.format(device))
+    # with tf.device(device):
+    #     states_pl = tf.placeholder(tf.float32, [None, 84, 84, 4], name='states')
+    #     actions_pl = tf.placeholder(tf.int32, [None], name='actions')
+    #     rewards_pl = tf.placeholder(tf.float32, [None], name='rewards')
+    #     flags_pl = tf.placeholder(tf.float32, [None], name='flags')
+    #     targets_pl = tf.placeholder(tf.float32, [None], name='targets')
+    #     values, policy_logits = cnn(states_pl / 255.0, 6, shared=True)
+    #
+    # print("Creating agent...")
+    # placeholders = {
+    #     'states': states_pl,
+    #     'actions': actions_pl,
+    #     'rewards': rewards_pl,
+    #     'flags': flags_pl,
+    #     'targets': targets_pl,
+    # }
+    # networks = {
+    #     'value': values,
+    #     'policy': policy_logits
+    # }
+    # agent = ActorCritic(
+    #     placeholders,
+    #     networks,
+    # )
 
-    print("Creating agent...")
-    placeholders = {
-        'states': states_pl,
-        'actions': actions_pl,
-        'rewards': rewards_pl,
-        'flags': flags_pl,
-        'targets': targets_pl,
-    }
-    networks = {
-        'value': values,
-        'policy': policy_logits
-    }
-    agent = ActorCritic(
-        placeholders,
-        networks,
-    )
+    print("Created agent...")
+    agent = ActorCritic()
 
     print("Setting up directories...")
     if base_dir is not None:
@@ -120,4 +123,4 @@ def run_atari(nthreads, tmax, base_dir='./examples', device='/gpu:0'):
                     break
 
 if __name__ == "__main__":
-    run_atari(nthreads=128, tmax=4)
+    run_atari(nthreads=32, tmax=4)
