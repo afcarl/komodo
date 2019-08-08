@@ -178,7 +178,7 @@ class AtariActorCritic():
     def save(self, path, step, sess):
         self.saver.save(sess, save_path=path, global_step=step)
 
-class ActorCritic():
+class NstepActorCritic():
 
     def __init__(
             self,
@@ -268,14 +268,10 @@ class ActorCritic():
         self.saver = saver
 
     def select_actions(self, states, sess):
-        feed_dict = {self.states_pl: states.reshape(self.state_dim)}
+        feed_dict = {self.states_pl: states}
         return sess.run(self.action_sample, feed_dict=feed_dict)  # NOTE: returns **list**
 
-    def get_values(self, states, sess):
-        feed_dict = {self.states_pl: states.reshape(self.state_dim)}
-        return sess.run(self.values, feed_dict=feed_dict)  # NOTE: returns **list**
-
-    def update(self, states, actions, rewards, next_states, flags, sess, logging=False):
+    def update(self, states, actions, rewards, next_states, flags, sess, logging=True):
 
         # calculate targets
         feed_dict = {
@@ -286,6 +282,133 @@ class ActorCritic():
         targets = sess.run(self.targets, feed_dict=feed_dict)
 
         # perform update
+        feed_dict={
+            self.states_pl: states,
+            self.actions_pl: actions,
+            self.targets_pl: targets,
+        }
+        if logging:
+            summary, _ = sess.run(
+                [self.summary_op, self.train_op,],
+                feed_dict=feed_dict)
+            return summary
+        else:
+            sess.run(self.train_op, feed_dict=feed_dict)
+            return None
+
+    def save(self, path, step, sess):
+        self.saver.save(sess, save_path=path, global_step=step)
+
+class ActorCritic():
+
+    def __init__(
+            self,
+            lr=0.01,
+            entropy_beta=0.01,
+            value_beta=0.5,
+            gamma=0.99,
+            tmax=5,
+            max_grad_norm=0.5,
+            device='/gpu:0'):
+
+        self.gamma = gamma
+        self.tmax = tmax
+
+        # construct graph
+        with tf.device(device):
+
+            # placeholders
+            states_pl = tf.placeholder(tf.float32, [None, 4], name='states')
+            actions_pl = tf.placeholder(tf.int32, [None], name='actions')
+            targets_pl = tf.placeholder(tf.float32, [None], name='targets')
+
+            # networks
+            values = mlp(states_pl, [64, 32, 1], scope='value')
+            policy_logits = mlp(states_pl, [64, 32, 2], scope='policy')
+            action_mask = tf.one_hot(actions_pl, int(policy_logits.shape[1]))
+            policy = tf.reduce_sum(action_mask * tf.nn.log_softmax(policy_logits), axis=1)
+
+            # actions
+            action_sample = tf.squeeze(
+                tf.multinomial(logits=policy_logits, num_samples=1),
+                axis=1
+            )
+
+            # losses
+            advantage = targets_pl - tf.stop_gradient(values)
+            policy_loss = -tf.reduce_mean(policy * advantage)
+            value_loss = tf.reduce_mean(tf.square(targets_pl - values))
+            entropy_loss = tf.reduce_mean(
+                tf.reduce_sum(
+                    tf.multiply(
+                        tf.nn.softmax(policy_logits),  # probabilities
+                        tf.nn.log_softmax(policy_logits)  # log probabilities
+                    ),
+                    axis=1
+                )
+            )
+            loss = policy_loss + entropy_beta * entropy_loss + value_beta * value_loss
+
+            # updates
+            optimizer = tf.train.RMSPropOptimizer(learning_rate=lr, decay=0.99, epsilon=1e-5)
+            gradients = optimizer.compute_gradients(loss)
+            train_op = optimizer.apply_gradients(gradients)
+
+        # tensorboard
+        tf.summary.scalar('loss', loss)
+        tf.summary.scalar('policy_loss', policy_loss)
+        tf.summary.scalar('entropy_loss', entropy_loss)
+        tf.summary.scalar('value_loss', value_loss)
+        tf.summary.histogram('policy_logits', policy_logits)
+        tf.summary.histogram('values', values)
+        tf.summary.histogram('advantage', advantage)
+        summary_op = tf.summary.merge_all()
+
+        # checkpoints
+        saver = tf.train.Saver()
+
+        # define handles
+        self.state_dim = dimensions(states_pl)
+        self.action_dim = dimensions(actions_pl)
+        self.states_pl = states_pl
+        self.actions_pl = actions_pl
+        self.targets_pl = targets_pl
+        self.values = values
+        self.policy_logits = policy_logits
+        self.action_sample = action_sample
+        self.train_op = train_op
+        self.summary_op = summary_op
+        self.saver = saver
+
+    def select_actions(self, states, sess):
+        feed_dict = {self.states_pl: states.reshape(self.state_dim)}
+        return sess.run(self.action_sample, feed_dict=feed_dict)  # NOTE: returns **list**
+
+    def get_values(self, states, sess):
+        feed_dict = {self.states_pl: states.reshape(self.state_dim)}
+        return sess.run(self.values, feed_dict=feed_dict)  # NOTE: returns **list**
+
+    def bundle(self, data, info):
+        """Bundle batch data and info into format for update."""
+        states = []
+        actions = []
+        targets = []
+        returns = []
+        steps = []
+        for (bd, bi) in zip(data, info):
+            s, a, r, tv, d = bd
+            states += s
+            actions += a
+            targets += bootstrapped_values(tv, r, self.gamma)
+            _, er, _ = bi
+            if er is not None:
+                returns += [er]
+        episodes = len(returns)
+        steps = len(states)
+        return states, actions, targets, episodes, returns, steps
+
+    def update(self, states, actions, targets, sess, logging=True):
+
         feed_dict={
             self.states_pl: states,
             self.actions_pl: actions,
