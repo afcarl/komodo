@@ -1,8 +1,12 @@
+import time
+import json
+import os
 import gym
+from datetime import datetime
 import numpy as np
 import tensorflow as tf
 from versterken.keras import mlp
-from versterken.utils import dimensions, bootstrapped_values
+from versterken.utils import dimensions, bootstrapped_values, create_directories, log_scalar, BatchGenerator
 
 # class AtariProximalPolicy():
 #
@@ -222,3 +226,90 @@ class ProximalPolicy():
 
     def save(self, path, step, sess):
         self.saver.save(sess, save_path=path, global_step=step)
+
+    def train(self, env, nthreads, tmax, minibatch_size, nepochs, base_dir='./examples', device='/gpu:0'):
+        """
+            `env (string)`: name of environment to train on (e.g., 'CartPole-v0')
+            `nthreads (int)`: number of environments to generate trajectories with
+            `tmax (int)`: maximum length of experience trajectories
+        """
+
+        print("Setting up directories...")
+        if base_dir is not None:
+            ckpt_dir, log_dir, meta_dir = create_directories(env, "ppo", base_dir)
+            meta = {
+                'env': env,
+                'nthreads': nthreads,
+                'tmax': tmax,
+                'minibatch_size': minibatch_size,
+                'nepochs': nepochs,
+                'lr': 0.001,
+                'entropy_beta': 0.01,
+                'value_beta': 0.5,
+                'gamma': 0.99,
+                'epsilon': 0.1,
+            }
+            with open(meta_dir + '/meta.json', 'w') as file:
+                json.dump(meta, file, indent=2)
+        else:
+            ckpt_dir = log_dir = None
+
+        print("Starting training...")
+        global_steps = 0
+        global_episodes = 0
+        global_updates = 0
+        global_returns = []
+        global_start = time.time()
+        with tf.Session() as sess:
+
+            # intialize graph
+            sess.run(tf.global_variables_initializer())
+
+            # create environments
+            envs = [gym.make(env) for _ in range(nthreads)]
+            generator = BatchGenerator(envs, self)
+
+            # setup logging
+            writer = tf.summary.FileWriter(log_dir + '/', sess.graph)
+
+            # main loop
+            while True:
+
+                # start batch timer
+                start = time.time()
+
+                # generate a batch
+                data, info = generator.sample(tmax, sess)
+                states, actions, targets, episodes, returns, steps = self.bundle(data, info)
+
+                # perform updates
+                for _ in range(nepochs):
+                    idx = np.random.choice(range(steps), size=minibatch_size)
+                    summary = self.update(
+                        [states[i] for i in idx],
+                        [actions[i] for i in idx],
+                        [targets[i] for i in idx],
+                        sess
+                    )
+                fps = steps / (time.time() - start)
+
+                # logging
+                global_updates += 1
+                global_steps += steps
+                global_episodes += episodes
+                global_time = time.time() - global_start
+                global_returns.extend(returns)
+                log_scalar(writer, 'fps', fps , global_steps)
+                writer.add_summary(summary, global_steps)
+                if episodes > 0:
+                    if len(global_returns) > 0:
+                        avg_return = sum(global_returns[-100:]) / min(len(global_returns), 100)
+                    else:
+                        avg_return = np.nan
+                    print(f"updates={global_updates}, steps={global_steps}, episodes={global_episodes}, avg_return={avg_return:.2f}, elapsed={global_time:.2f}, fps={fps:.2f}")
+                    log_scalar(writer, 'avg_return', avg_return, global_steps)
+                    log_scalar(writer, 'return', np.mean(returns), global_steps)
+                    if avg_return > 195.0:
+                        self.save(ckpt_dir + "/ckpt", global_steps, sess)
+                        print("passed!")
+                        break

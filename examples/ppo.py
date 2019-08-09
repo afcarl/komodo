@@ -87,4 +87,7 @@ def run(nthreads, tmax, minibatch_size, nepochs, base_dir='./examples', device='
                     break
 
 if __name__ == "__main__":
-    run(nthreads=8, tmax=128, minibatch_size=32*8, nepochs=3)
+    # run(nthreads=8, tmax=128, minibatch_size=32*8, nepochs=3)
+
+    agent = ProximalPolicy()
+    agent.train("CartPole-v0", nthreads=8, tmax=128, minibatch_size=32 * 8, nepochs=3)
