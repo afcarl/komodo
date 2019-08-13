@@ -8,19 +8,10 @@ def dense(x, units, activation=None):
     bias = tf.Variable(tf.constant(0.1, shape=[units]), name='bias')
     return  activation(tf.matmul(x, weights) + bias)
 
-def mlp(x, sizes, activation, scope=''):
+def mlp(x, sizes, scope=''):
     with tf.variable_scope(scope):
         for size in sizes[:-1]:
-            x = dense(x, units=size, activation=activation)
-        if sizes[-1] == 1:
-            return tf.squeeze(tf.layers.dense(x, units=sizes[-1]))
-        else:
-            return tf.layers.dense(x, units=sizes[-1])
-
-def mlp(x, sizes, activation, scope=''):
-    with tf.variable_scope(scope):
-        for size in sizes[:-1]:
-            x = tf.layers.dense(x, units=size, activation=activation)
+            x = tf.layers.dense(x, units=size, activation=tf.nn.tanh)
         if sizes[-1] == 1:
             return tf.squeeze(tf.layers.dense(x, units=sizes[-1]))
         else:
