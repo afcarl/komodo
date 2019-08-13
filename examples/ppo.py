@@ -10,84 +10,38 @@ from datetime import datetime
 from versterken.utils import create_directories, log_scalar, BatchGenerator
 from versterken.ppo import ProximalPolicy
 
-def run(nthreads, tmax, minibatch_size, nepochs, base_dir='./examples', device='/gpu:0'):
+FLAGS = tf.app.flags.FLAGS
 
-    print("Created agent...")
-    agent = ProximalPolicy()
-
-    print("Setting up directories...")
-    if base_dir is not None:
-        ckpt_dir, log_dir, meta_dir = create_directories('CartPole-v0', "ppo", base_dir)
-        meta = {
-            'env_name': 'CartPole-v0',
-        }
-        with open(meta_dir + '/meta.json', 'w') as file:
-            json.dump(meta, file, indent=2)
-    else:
-        ckpt_dir = log_dir = None
-
-    print("Starting training...")
-    global_steps = 0
-    global_episodes = 0
-    global_updates = 0
-    global_returns = []
-    global_start = time.time()
-    with tf.Session() as sess:
-
-        # intialize graph
-        sess.run(tf.global_variables_initializer())
-
-        # create environments
-        envs = [gym.make('CartPole-v0') for _ in range(nthreads)]
-        generator = BatchGenerator(envs, agent)
-
-        # setup logging
-        writer = tf.summary.FileWriter(log_dir + '/', sess.graph)
-
-        # main loop
-        while True:
-
-            # start batch timer
-            start = time.time()
-
-            # generate a batch
-            data, info = generator.sample(tmax, sess)
-            states, actions, targets, episodes, returns, steps = agent.bundle(data, info)
-
-            # perform updates
-            for _ in range(nepochs):
-                idx = np.random.choice(range(steps), size=minibatch_size)
-                summary = agent.update(
-                    [states[i] for i in idx],
-                    [actions[i] for i in idx],
-                    [targets[i] for i in idx],
-                    sess
-                )
-            fps = steps / (time.time() - start)
-
-            # logging
-            global_updates += 1
-            global_steps += steps
-            global_episodes += episodes
-            global_time = time.time() - global_start
-            global_returns.extend(returns)
-            log_scalar(writer, 'fps', fps , global_steps)
-            writer.add_summary(summary, global_steps)
-            if episodes > 0:
-                if len(global_returns) > 0:
-                    avg_return = sum(global_returns[-100:]) / min(len(global_returns), 100)
-                else:
-                    avg_return = np.nan
-                print(f"updates={global_updates}, steps={global_steps}, episodes={global_episodes}, avg_return={avg_return:.2f}, elapsed={global_time:.2f}, fps={fps:.2f}")
-                log_scalar(writer, 'avg_return', avg_return, global_steps)
-                log_scalar(writer, 'return', np.mean(returns), global_steps)
-                if avg_return > 195.0:
-                    agent.save(ckpt_dir + "/ckpt", global_steps, sess)
-                    print("passed!")
-                    break
+tf.app.flags.DEFINE_string('mode', 'train', """'Train' or 'test'.""")
+tf.app.flags.DEFINE_string('env', 'CartPole-v0', """Gym environment.""")
+tf.app.flags.DEFINE_float('learning_rate', 0.001, """Initial learning rate.""")
+tf.app.flags.DEFINE_float('entropy_beta', 0.01, """Entropy loss coefficient.""")
+tf.app.flags.DEFINE_float('value_beta', 0.5, """Value loss coefficient.""")
+tf.app.flags.DEFINE_float('gamma', 0.99, """Discount factor in update.""")
+tf.app.flags.DEFINE_float('epsilon', 0.1, """Policy loss clipping.""")
+tf.app.flags.DEFINE_string('hidden_units', '64,32', """Size of hidden layers.""")
+tf.app.flags.DEFINE_string('device', '/gpu:0', """'/cpu:0' or '/gpu:0'.""")
+tf.app.flags.DEFINE_integer('nthreads', 8, """Number of environments generating experience.""")
+tf.app.flags.DEFINE_integer('tmax', 128, """Maximum trajectory length.""")
+tf.app.flags.DEFINE_integer('minibatch_size', 32 * 8, """Examples per training update.""")
+tf.app.flags.DEFINE_integer('nepochs', 3, """Update steps per batch.""")
+tf.app.flags.DEFINE_float('pass_condition', 195.0, """Average score considered passing environment.""")
 
 if __name__ == "__main__":
-    # run(nthreads=8, tmax=128, minibatch_size=32*8, nepochs=3)
-
-    agent = ProximalPolicy()
-    agent.train("CartPole-v0", nthreads=8, tmax=128, minibatch_size=32 * 8, nepochs=3)
+    agent = ProximalPolicy(
+        env=FLAGS.env,
+        lr=FLAGS.learning_rate,
+        entropy_beta=FLAGS.entropy_beta,
+        value_beta=FLAGS.value_beta,
+        gamma=FLAGS.gamma,
+        epsilon=FLAGS.epsilon,
+        hidden_units=[int(i) for i in FLAGS.hidden_units.split(',')],
+        device=FLAGS.device
+    )
+    agent.train(
+        nthreads=FLAGS.nthreads,
+        tmax=FLAGS.tmax,
+        minibatch_size=FLAGS.minibatch_size,
+        nepochs=FLAGS.nepochs,
+        pass_condition=FLAGS.pass_condition
+    )

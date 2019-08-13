@@ -107,25 +107,38 @@ class ProximalPolicy():
 
     def __init__(
         self,
+        env='CartPole-v0',
         lr=0.001,
         entropy_beta=0.01,
         value_beta=0.5,
         gamma=0.99,
         epsilon=0.1,
+        hidden_units=[64, 32],
         device='/gpu:0'):
 
+        self.env = env
+        self.lr = lr
+        self.entropy_beta = entropy_beta
+        self.value_beta = value_beta
         self.gamma = gamma
+        self.epsilon = epsilon
+        self.hidden_units = hidden_units
+        self.device = device
 
+        print("Setting up agent...")
+        env = gym.make(env)
+        state_dim = env.observation_space.shape
+        n_actions = env.action_space.n
         with tf.device(device):
 
             # placeholders
-            states_pl = tf.placeholder(tf.float32, [None, 4], name='states')
+            states_pl = tf.placeholder(tf.float32, [None, *state_dim], name='states')
             actions_pl = tf.placeholder(tf.int32, [None], name='actions')
             targets_pl = tf.placeholder(tf.float32, [None], name='targets')
 
             # networks
-            values = mlp(states_pl, [64, 32, 1], scope='value')
-            policy_logits = mlp(states_pl, [64, 32, 2], scope='policy')
+            values = mlp(states_pl, [*hidden_units, 1], scope='value')
+            policy_logits = mlp(states_pl, [*hidden_units, n_actions], scope='policy')
             action_mask = tf.one_hot(actions_pl, int(policy_logits.shape[1]))
             policy = tf.reduce_sum(action_mask * tf.nn.softmax(policy_logits), axis=1)
 
@@ -227,7 +240,7 @@ class ProximalPolicy():
     def save(self, path, step, sess):
         self.saver.save(sess, save_path=path, global_step=step)
 
-    def train(self, env, nthreads, tmax, minibatch_size, nepochs, base_dir='./examples', device='/gpu:0'):
+    def train(self, nthreads, tmax, minibatch_size, nepochs, pass_condition, base_dir='./examples'):
         """
             `env (string)`: name of environment to train on (e.g., 'CartPole-v0')
             `nthreads (int)`: number of environments to generate trajectories with
@@ -236,18 +249,19 @@ class ProximalPolicy():
 
         print("Setting up directories...")
         if base_dir is not None:
-            ckpt_dir, log_dir, meta_dir = create_directories(env, "ppo", base_dir)
+            ckpt_dir, log_dir, meta_dir = create_directories(self.env, "ppo", base_dir)
             meta = {
-                'env': env,
+                'env': self.env,
                 'nthreads': nthreads,
                 'tmax': tmax,
                 'minibatch_size': minibatch_size,
                 'nepochs': nepochs,
-                'lr': 0.001,
-                'entropy_beta': 0.01,
-                'value_beta': 0.5,
-                'gamma': 0.99,
-                'epsilon': 0.1,
+                'lr': self.lr,
+                'entropy_beta': self.entropy_beta,
+                'value_beta': self.value_beta,
+                'gamma': self.gamma,
+                'epsilon': self.epsilon,
+                'hidden_units': self.hidden_units
             }
             with open(meta_dir + '/meta.json', 'w') as file:
                 json.dump(meta, file, indent=2)
@@ -266,7 +280,7 @@ class ProximalPolicy():
             sess.run(tf.global_variables_initializer())
 
             # create environments
-            envs = [gym.make(env) for _ in range(nthreads)]
+            envs = [gym.make(self.env) for _ in range(nthreads)]
             generator = BatchGenerator(envs, self)
 
             # setup logging
