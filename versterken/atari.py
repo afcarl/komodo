@@ -23,6 +23,9 @@ class AtariEnvironment():
         self.env = env
         self.nframes = nframes
         self.frame_queue = Queue(self.nframes)
+        self.observation_space = env.observation_space
+        self.observation_space.shape = (84, 84, nframes)
+        self.action_space = env.action_space
 
     def reset(self):
         """Reset environment. The initial 'state' is the first frame repeated `nframes` times."""
