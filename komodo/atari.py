@@ -2,7 +2,7 @@ import gym
 import numpy as np
 import tensorflow as tf
 from cv2 import resize, INTER_NEAREST
-from versterken.queue import Queue
+from komodo.queue import Queue
 
 class AtariEnvironment():
 

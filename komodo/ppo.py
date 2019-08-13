@@ -5,8 +5,8 @@ import gym
 from datetime import datetime
 import numpy as np
 import tensorflow as tf
-from versterken.keras import mlp
-from versterken.utils import dimensions, bootstrapped_values, create_directories, log_scalar, BatchGenerator
+from komodo.keras import mlp
+from komodo.utils import dimensions, bootstrapped_values, create_directories, log_scalar, BatchGenerator
 
 # class AtariProximalPolicy():
 #

@@ -1,8 +1,8 @@
 import gym
 import numpy as np
 import tensorflow as tf
-from versterken.keras import clip_by_norm, mlp
-from versterken.utils import dimensions
+from komodo.keras import clip_by_norm, mlp
+from komodo.utils import dimensions
 
 class AtariActorCritic():
 

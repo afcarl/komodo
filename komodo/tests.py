@@ -7,7 +7,7 @@ import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress all messages
 tf.logging.set_verbosity(tf.logging.ERROR)
 from datetime import datetime
-from versterken.utils import BatchGenerator
+from komodo.utils import BatchGenerator
 
 agent = ActorCritic()
 envs = [gym.make('CartPole-v0') for _ in range(2)]

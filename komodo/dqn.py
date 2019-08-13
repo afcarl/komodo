@@ -2,7 +2,7 @@ import gym
 import numpy as np
 import tensorflow as tf
 import time
-from versterken.keras import cnn
+from komodo.keras import cnn
 
 class DQN():
 
@@ -136,7 +136,7 @@ class ReplayMemory():
         env,
         min_memory_size=10000,
         max_memory_size=10000):
-        
+
         assert type(env) == AtariEnvironment
         print('Filling replay memory...')
         start = time.time()

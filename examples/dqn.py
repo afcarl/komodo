@@ -1,7 +1,7 @@
 import numpy as np
-from versterken.atari import AtariEnvironment
-from versterken.dqn import DQN, ReplayMemory
-from versterken.utils import create_directories, log_scalar
+from komodo.atari import AtariEnvironment
+from komodo.dqn import DQN, ReplayMemory
+from komodo.utils import create_directories, log_scalar
 
 def train(id, batch_size, base_dir='./examples'):
     """

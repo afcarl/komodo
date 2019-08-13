@@ -7,10 +7,10 @@ import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress all messages
 tf.logging.set_verbosity(tf.logging.ERROR)
 from datetime import datetime
-from versterken.a2c import ActorCritic, BatchGenerator
-from versterken.atari import AtariEnvironment
-from versterken.utils import create_directories, log_scalar, log_episode, print_items
-from versterken.keras import cnn
+from komodo.a2c import ActorCritic, BatchGenerator
+from komodo.atari import AtariEnvironment
+from komodo.utils import create_directories, log_scalar, log_episode, print_items
+from komodo.keras import cnn
 
 def run_atari(nthreads, tmax, base_dir='./examples', device='/gpu:0'):
 

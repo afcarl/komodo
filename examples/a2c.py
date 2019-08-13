@@ -7,8 +7,8 @@ import tensorflow as tf
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # suppress all messages
 tf.logging.set_verbosity(tf.logging.ERROR)
 from datetime import datetime
-from versterken.utils import create_directories, log_scalar, BatchGenerator, NstepBatchGenerator
-from versterken.a2c import ActorCritic, NstepActorCritic
+from komodo.utils import create_directories, log_scalar, BatchGenerator, NstepBatchGenerator
+from komodo.a2c import ActorCritic, NstepActorCritic
 
 def run(nthreads, tmax, base_dir='./examples', device='/gpu:0'):
 

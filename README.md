@@ -1,2 +1,2 @@
-# versterken
+# Komodo
 Reinforcement Learning in Python
