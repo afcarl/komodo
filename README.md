@@ -1,2 +1,2 @@
 # Komodo
-Reinforcement Learning in Python
+Deep reinforcement learning in TensorFlow [**under construction**].
